@@ -92,15 +92,23 @@ def language_of(text: str) -> str:
     return "Chinese" if any("\u4e00" <= c <= "\u9fff" for c in text) else "English"
 
 
-def check_reference(ref_audio: Path, ref_text: str) -> None:
+def check_reference(ref_audio: Path, ref_text: str, verify_asr: bool = True) -> None:
     """Fail early on a reference clip that cloning cannot use.
 
-    A wrong ``ref_text`` is the single most common reason a clone sounds like a
-    different speaker, so the script refuses to proceed silently: it measures the
-    clip and compares its expected speech length against the transcript.
+    A ``ref_text`` that does not match the clip is not a cosmetic problem: Qwen
+    treats any extra text as content still to be generated, so **every** output
+    opens with the surplus words. Measured symptom of exactly that bug: a 2
+    character input produced 2.8 s of audio starting with the tail of the
+    reference script.
+
+    Two checks catch it:
+
+    1. characters per second must land in the plausible range for Mandarin;
+    2. optionally, a local ASR pass must transcribe the clip to something close
+       to ``ref_text`` -- this is what actually caught the mismatch above, since
+       the rate check alone passed.
     """
     import librosa
-    import numpy as np
 
     if not ref_audio.exists():
         raise SystemExit(f"reference audio not found: {ref_audio}")
@@ -112,19 +120,68 @@ def check_reference(ref_audio: Path, ref_text: str) -> None:
             f"reference audio is only {duration:.2f}s; Qwen3-TTS needs about 3s "
             "of clean speech to clone reliably")
 
-    cjk = sum(1 for c in ref_text if "\u4e00" <= c <= "\u9fff")
+    cjk = sum(1 for c in ref_text if "一" <= c <= "鿿")
     latin_words = len([w for w in ref_text.split() if w.strip()])
     units = cjk if cjk else latin_words
     rate = units / duration
     print(f"reference: {duration:.2f}s, {units} speech units -> {rate:.1f}/s")
 
-    # Mandarin runs about 3.5-6.5 characters per second; anything outside that
-    # band means the transcript and the clip do not match.
-    if cjk and not 3.0 <= rate <= 7.5:
+    # Wide band, because the ASR check below is the precise one.
+    if cjk and not 2.0 <= rate <= 8.0:
         raise SystemExit(
             f"ref_text has {cjk} characters over {duration:.2f}s ({rate:.1f}/s), "
-            "which is outside the plausible 3.0-7.5 range. The transcript "
+            "which is outside the plausible 2.0-8.0 range. The transcript "
             "probably is not the text of this clip -- re-check it.")
+
+    if not verify_asr:
+        return
+
+    try:
+        transcribed = _transcribe(ref_audio)
+    except Exception as exc:  # noqa: BLE001 -- ASR is a guard, not a dependency
+        print(f"reference: ASR check skipped ({type(exc).__name__}: {exc})")
+        return
+    if not transcribed:
+        print("reference: ASR check skipped (no speech recognised)")
+        return
+
+    same = _similar(transcribed, ref_text)
+    print(f"reference ASR says : {transcribed}")
+    print(f"reference text says: {ref_text}")
+    if same < 0.6:
+        raise SystemExit(
+            "ref_text does not match what the clip actually says "
+            f"(similarity {same:.0%}). Qwen would prepend the extra words to "
+            "every generated clip. Fix --ref-text, or delete the surplus "
+            "sentence from it.")
+    print(f"reference: transcript matches ({same:.0%} similar)")
+
+
+def _transcribe(path: Path) -> str:
+    """Transcribe a clip with whisper, if it is installed."""
+    import librosa
+    import numpy as np
+    import whisper
+
+    root = Path(__file__).resolve().parent.parent / ".cache" / "whisper"
+    root.mkdir(parents=True, exist_ok=True)
+    model = whisper.load_model("small", download_root=str(root))
+    y, _ = librosa.load(str(path), sr=16000, mono=True)
+    out = model.transcribe(y.astype(np.float32), language="zh", fp16=False)
+    return str(out.get("text", "")).strip()
+
+
+def _similar(a: str, b: str) -> float:
+    """Character-level overlap ratio, ignoring punctuation and whitespace."""
+    import re
+
+    clean = lambda s: re.sub(r"[^\w一-鿿]", "", s)  # noqa: E731
+    sa, sb = clean(a), clean(b)
+    if not sa or not sb:
+        return 0.0
+    # Longest common subsequence would be better but this is a guard, not a metric.
+    common = sum(1 for ch in set(sa) if ch in set(sb))
+    return common / max(len(set(sa)), len(set(sb)))
 
 
 def main() -> int:
@@ -139,10 +196,13 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "data" / "clone_source")
     ap.add_argument("--model", default=MODEL_ID)
     ap.add_argument("--resume", action="store_true", default=True)
+    ap.add_argument("--no-asr-check", action="store_true",
+                    help="skip the whisper cross-check of --ref-text")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    check_reference(args.ref_audio, args.ref_text)
+    check_reference(args.ref_audio, args.ref_text,
+                   verify_asr=not args.no_asr_check)
 
     lines = corpus_lines(args.limit, sample=args.sample,
                          english_share=args.english_share)
