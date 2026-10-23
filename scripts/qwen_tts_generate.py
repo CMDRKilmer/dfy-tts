@@ -45,19 +45,60 @@ CATEGORY_ORDER = [
 ]
 
 
-def corpus_lines(limit: int) -> list[str]:
-    """Read the corpus in category order, de-duplicated."""
-    lines: list[str] = []
+def corpus_lines(limit: int, sample: bool = False,
+                 english_share: float = 0.30) -> list[str]:
+    """Read the corpus, de-duplicated.
+
+    ``sample=False`` (default) walks categories in JSONL order, so a small
+    ``--limit`` returns only the first categories -- ``mixed``, where all the
+    English lives, is last and never reached.
+
+    ``sample=True`` stratifies by language instead: ``english_share`` of the
+    requested lines are pure English, the rest Chinese (code-switched lines come
+    along with the Chinese quota). A short test run therefore actually exercises
+    the bilingual path, which plain proportional sampling does not -- pure
+    English is only ~11% of the corpus, so 60 lines would get 6 of them.
+    """
+    per_cat: dict[str, list[str]] = {}
     seen: set[str] = set()
     for cat in CATEGORY_ORDER:
         path = TEXT_DIR / f"{cat}.txt"
         if not path.exists():
             continue
+        bucket: list[str] = []
         for raw in path.read_text(encoding="utf-8").splitlines():
             text = raw.strip()
             if text and text not in seen:
                 seen.add(text)
-                lines.append(text)
+                bucket.append(text)
+        per_cat[cat] = bucket
+
+    def is_english(text: str) -> bool:
+        return not any("\u4e00" <= c <= "\u9fff" for c in text)
+
+    if sample and limit > 0:
+        # Language pools, each in category order so topic coverage stays spread.
+        pool = [t for cat in CATEGORY_ORDER for t in per_cat.get(cat, [])]
+        english = [t for t in pool if is_english(t)]
+        chinese = [t for t in pool if not is_english(t)]
+
+        want_en = min(len(english), max(1, round(limit * english_share)))
+        want_zh = min(len(chinese), limit - want_en)
+        # Round-robin the two pools so both languages stay spread over topics.
+        picked: list[str] = []
+        i = j = 0
+        while len(picked) < want_en + want_zh:
+            if i < want_en:
+                picked.append(english[i])
+                i += 1
+            if j < want_zh and len(picked) < want_en + want_zh:
+                picked.append(chinese[j])
+                j += 1
+        print(f"sampled {len(picked)} lines: {want_en} English, {want_zh} Chinese "
+              f"(pools: {len(english)} / {len(chinese)})")
+        return picked
+
+    lines = [t for cat in CATEGORY_ORDER for t in per_cat.get(cat, [])]
     return lines[:limit] if limit > 0 else lines
 
 
@@ -79,10 +120,16 @@ def main() -> int:
     ap.add_argument("--model", default=MODEL_ID)
     ap.add_argument("--resume", action="store_true", default=True,
                     help="skip clips that already exist (default on)")
+    ap.add_argument("--sample", action="store_true",
+                    help="stratify by language instead of taking the first "
+                         "--limit lines (otherwise English is never reached)")
+    ap.add_argument("--english-share", type=float, default=0.30,
+                    help="with --sample, fraction of lines that are pure English")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    lines = corpus_lines(args.limit)
+    lines = corpus_lines(args.limit, sample=args.sample,
+                         english_share=args.english_share)
     if not lines:
         print("corpus is empty; run scripts/make_corpus.py first", file=sys.stderr)
         return 1

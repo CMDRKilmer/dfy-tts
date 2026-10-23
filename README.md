@@ -201,8 +201,12 @@ uv pip install --python .venv/Scripts/python.exe -U qwen-tts
 .venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 3
 
 # 第一批 60 句（2080 Ti 上约 12 分钟）
-.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60
+.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60 --sample
 ```
+
+> **`--sample` 不能省。** 不加它，脚本按 JSONL 顺序取前 N 条，而 `mixed`（所有英文都在那儿）
+> 是最后一个分类——60 句会全是中文，英文一句都没有。加上 `--sample` 后按语言分层抽样，
+> 默认 30% 是纯英文（`--english-share 0.3` 可调），60 句里就有 18 句英文。
 
 第一次会下载 `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`（约 1.8 GB）。国内网络下
 `huggingface_hub` 容易断，**下载一次成功后就别再让它联网**，改用本地快照路径：
@@ -210,12 +214,13 @@ uv pip install --python .venv/Scripts/python.exe -U qwen-tts
 ```powershell
 $LOCAL = (Get-ChildItem -Recurse -Directory "$PWD/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice/snapshots" | Select-Object -First 1).FullName
 $env:HF_HUB_OFFLINE = "1"
-.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60 --model $LOCAL
+.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60 --sample --model $LOCAL
 ```
 
 产出的 `data/qwen_source/` 是 24 kHz 单声道；`build_dataset.py` 会转成 22050 Hz。
-**实测数据**：60 句 → 2.6 分钟音频 → 50 epoch（约 12 分钟）→ val_mel 1.72 → 0.77，
-导出 2.2 MB 模型能正常合成。**但 2.6 分钟远不够学到音色**，只够验证链路；
+**实测数据**（双语版）：60 句（42 中 + 18 英）→ 2.8 分钟音频 → 50 epoch（约 13 分钟）
+→ val_mel 最好 0.7983 → 导出 2.2 MB → 合成 zh 2.97s / **en 1.79s** / 混排 1.78s，
+英文确实念得出来。**但 2.8 分钟远不够学到音色**，只够验证链路；
 真要音色像，按 MiniMax 那条路凑 30 分钟以上。
 
 `--resume` 默认开着，中断后重跑只会补缺失的片段。
