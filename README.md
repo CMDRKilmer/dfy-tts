@@ -187,8 +187,38 @@ Piper 的中文音色用 espeak-ng 的 `cmn` 音素表训练，而 `cmn` 输出�
 
 ### 2. 生成音频
 
-用 MiniMax 音色复刻生成音频，导出到一个文件夹（`wav/mp3/m4a/flac` 都行），文本用
-`texts.txt`（`文件名|文本`）或与音频同名的 `.txt` 记录。
+两条路，产物格式一样（一个文件夹 + `texts.txt`），`build_dataset.py` 都吃。
+
+**A. MiniMax（音色复刻，效果最好）**：用 MiniMax 音色复刻生成音频，导出到一个文件夹
+（`wav/mp3/m4a/flac` 都行），文本用 `texts.txt`（`文件名|文本`）或与音频同名的 `.txt` 记录。
+
+**B. Qwen3-TTS（本地免费，用来跑通流程）**：
+
+```powershell
+uv pip install --python .venv/Scripts/python.exe -U qwen-tts
+
+# 先 3 句验证模型加载
+.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 3
+
+# 第一批 60 句（2080 Ti 上约 12 分钟）
+.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60
+```
+
+第一次会下载 `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`（约 1.8 GB）。国内网络下
+`huggingface_hub` 容易断，**下载一次成功后就别再让它联网**，改用本地快照路径：
+
+```powershell
+$LOCAL = (Get-ChildItem -Recurse -Directory "$PWD/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice/snapshots" | Select-Object -First 1).FullName
+$env:HF_HUB_OFFLINE = "1"
+.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60 --model $LOCAL
+```
+
+产出的 `data/qwen_source/` 是 24 kHz 单声道；`build_dataset.py` 会转成 22050 Hz。
+**实测数据**：60 句 → 2.6 分钟音频 → 50 epoch（约 12 分钟）→ val_mel 1.72 → 0.77，
+导出 2.2 MB 模型能正常合成。**但 2.6 分钟远不够学到音色**，只够验证链路；
+真要音色像，按 MiniMax 那条路凑 30 分钟以上。
+
+`--resume` 默认开着，中断后重跑只会补缺失的片段。
 
 ### 3. 转成 Piper 数据集
 
@@ -275,6 +305,7 @@ scripts/
   refdata_phonetic.py        # 多音字 328 条 + 音变 115 条的素材
   bilingual_corpus.py        # 纯英文 103 句 + 中英混排 40 句 + 对照中文 20 句
   make_minimax_jsonl.py      # 合成 MiniMax 语音合成用的 JSONL
+  qwen_tts_generate.py       # 用 Qwen3-TTS 本地生成语料音频（免费，用来跑通流程）
   phonemize_bilingual.py     # 中英分流音素器（推理端必需，含 uncovered() 干跑）
   test_phonemize_bilingual.py# 分段无损 / 中文奇偶校验 / 英文符号覆盖
   say.py                     # 双语合成器（电脑与树莓派都能用）
@@ -306,3 +337,6 @@ requirements.txt             # 已验证的依赖版本
 - `export_onnx_safe.py` 强制走 forward 分支；训练充分后想用上游原版导出也可以直接用
   `python -m piper.train.export_onnx`。
 - 训练依赖 `torch>=2,<3`；升级 torch 时注意保持 CUDA 索引与驱动匹配。
+- **Qwen3-TTS 只是流程验证工具**。60 句 / 2.6 分钟训出来的声音不像参考音色——数据量差了
+  一个数量级（Piper 微调要 30 分钟以上）。另外 `qwen-tts` 会带进 `transformers` /
+  `torchaudio`，装完记得复核 `torch.cuda.is_available()` 仍是 True（实测没被换掉）。
