@@ -187,20 +187,40 @@ Piper 的中文音色用 espeak-ng 的 `cmn` 音素表训练，而 `cmn` 输出�
 
 ### 2. 生成音频
 
-两条路，产物格式一样（一个文件夹 + `texts.txt`），`build_dataset.py` 都吃。
+三条路，产物格式一样（一个文件夹 + `texts.txt`），`build_dataset.py` 都吃。
 
 **A. MiniMax（音色复刻，效果最好）**：用 MiniMax 音色复刻生成音频，导出到一个文件夹
 （`wav/mp3/m4a/flac` 都行），文本用 `texts.txt`（`文件名|文本`）或与音频同名的 `.txt` 记录。
 
-**B. Qwen3-TTS（本地免费，用来跑通流程）**：
+**B. Qwen3-TTS 零样本克隆（本地免费，推荐）**：拿一段 3 秒以上的参考音，用它克隆音色
+再批量生成整份语料。**实测这把嗓子克隆出来 MFCC 音色距离 25**（对比现成音色里最像的
+fanchen 是 77、huayan 是 175），耳朵能听出是同一把嗓子。
 
 ```powershell
 uv pip install --python .venv/Scripts/python.exe -U qwen-tts
 
-# 先 3 句验证模型加载
-.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 3
+# 先 4 句验证克隆效果
+.venv/Scripts/python.exe scripts/qwen_clone_generate.py `
+  --ref-audio data/target/astrbot_real_voice.mp3 `
+  --ref-text "哼！本小姐才不是大肥鱼呢，这是丰满的流线型身材。米饭煮好了哦，快来吃。" `
+  --limit 4 --sample
 
-# 第一批 60 句（2080 Ti 上约 12 分钟）
+# 批量生成 700 条（约 4.5 小时，可断点续传）
+.venv/Scripts/python.exe scripts/qwen_clone_generate.py `
+  --ref-audio data/target/astrbot_real_voice.mp3 `
+  --ref-text "<参考音一字不差的文本>" `
+  --limit 700 --sample --out data/clone_source
+```
+
+> **`--ref-text` 必须和参考音一字不差。** 它是脚本克隆音色的唯一依据，写错就会克隆出
+> 另一个人的声音。脚本会先做校验：算出「字数 ÷ 秒数」，落在 3.0–7.5 字/秒之外直接拒绝
+> 运行——这是能自动抓出的最常见错误。
+>
+> **`--sample` 同样不能省**，理由见下一条。
+
+**C. Qwen3-TTS 预置音色（不需要参考音）**：
+
+```powershell
 .venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60 --sample
 ```
 
@@ -208,20 +228,29 @@ uv pip install --python .venv/Scripts/python.exe -U qwen-tts
 > 是最后一个分类——60 句会全是中文，英文一句都没有。加上 `--sample` 后按语言分层抽样，
 > 默认 30% 是纯英文（`--english-share 0.3` 可调），60 句里就有 18 句英文。
 
-第一次会下载 `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`（约 1.8 GB）。国内网络下
-`huggingface_hub` 容易断，**下载一次成功后就别再让它联网**，改用本地快照路径：
+**第一次跑要下载模型**：克隆用 `Qwen/Qwen3-TTS-12Hz-0.6B-Base`（约 2.4 GB），预置音色用
+`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`（约 1.8 GB）。国内网络下 `huggingface_hub`
+容易断，**下载一次成功后就别再让它联网**，改用本地快照路径：
 
 ```powershell
-$LOCAL = (Get-ChildItem -Recurse -Directory "$PWD/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice/snapshots" | Select-Object -First 1).FullName
+$LOCAL = (Get-ChildItem -Recurse -Directory "$PWD/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots" | Select-Object -First 1).FullName
 $env:HF_HUB_OFFLINE = "1"
-.venv/Scripts/python.exe scripts/qwen_tts_generate.py --limit 60 --sample --model $LOCAL
+.venv/Scripts/python.exe scripts/qwen_clone_generate.py --ref-audio ... --ref-text ... --limit 700 --sample --model $LOCAL
 ```
 
-产出的 `data/qwen_source/` 是 24 kHz 单声道；`build_dataset.py` 会转成 22050 Hz。
-**实测数据**（双语版）：60 句（42 中 + 18 英）→ 2.8 分钟音频 → 50 epoch（约 13 分钟）
-→ val_mel 最好 0.7983 → 导出 2.2 MB → 合成 zh 2.97s / **en 1.79s** / 混排 1.78s，
-英文确实念得出来。**但 2.8 分钟远不够学到音色**，只够验证链路；
-真要音色像，按 MiniMax 那条路凑 30 分钟以上。
+产出的音频是 24–32 kHz 单声道；`build_dataset.py` 会转成 22050 Hz。
+
+**实测数据**：
+
+| 路线 | 数据量 | 训练 | 结果 |
+| --- | --- | --- | --- |
+| 预置音色 60 句 | 2.8 分钟 | 50 epoch / 13 分钟 | 链路通，**音色不像**（数据太少） |
+| 克隆音色 700 句 | ~35 分钟 | 待跑 | 待验证 |
+
+> **踩过的坑：Qwen 的预置音色音频不能直接喂 Piper。** 那批音频 8 kHz 以上残留 3.0% 能量
+> （官方 huayan 是 0.0%）、RMS 0.050（官方 0.080），24k→22050 还有混叠。用它训出来的模型
+> VAD 人声占比 **0%～23%**，全是杂音。低通 + 归一化清洗后也只到 23.5%。**克隆路线没这个问题**，
+> 因为克隆输出直接继承了参考音的音质。
 
 `--resume` 默认开着，中断后重跑只会补缺失的片段。
 

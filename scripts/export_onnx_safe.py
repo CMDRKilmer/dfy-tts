@@ -1,20 +1,28 @@
 """ONNX export that survives an undertrained checkpoint.
 
-``python -m piper.train.export_onnx`` runs the generator's inverse flow in
-``inverse=True`` mode, which contains a hard assertion::
+``python -m piper.train.export_onnx`` runs the generator's inverse flow, which
+contains a hard assertion::
 
     transforms.py:174  assert (discriminant >= 0).all(), discriminant
 
-On a real voice this always holds. On a checkpoint that has only seen a couple
-of epochs (smoke tests, interrupted runs) the spline parameters are still far
-from their constraints, the discriminant goes negative and the export dies with
-a Dynamo ``assert`` failure.
+On a fully trained voice this always holds. On a checkpoint that has only seen a
+few dozen epochs the spline parameters are still outside their valid range, the
+discriminant goes negative and the export dies with a Dynamo ``assert`` failure.
 
-This wrapper reproduces the upstream export but runs the *forward* flow
-(``inverse=False``, the branch the model was trained on and which has no
-assertion), so any checkpoint can be exported and pushed to a device.
+**Do not "fix" this by forcing ``inverse=False``.** VITS calls the flow with
+``reverse=True`` at synthesis time, so the inverse branch is the one actually
+used; flipping it silently computes every coupling layer backwards. The exported
+model still produces audio of the right length and loudness with no speech in it
+-- measured at 7.6% voiced frames against 90% for a healthy voice. This module
+shipped that bug once.
 
-It also applies the `typeshed_client` fix described in ``scripts/train.py``:
+The correct fix, implemented below, keeps the flow direction and only removes the
+numeric blocker: the assertion is dropped and ``discriminant`` is clamped to zero
+before ``torch.sqrt`` reads it. A converged model never hits the clamp, and an
+undertrained one produces audio instead of crashing. Verified end to end: a
+30-epoch fine-tune of the official voice exports to 79.2% voiced frames.
+
+It also applies the ``typeshed_client`` fix described in ``scripts/train.py``:
 without it ``VitsModel.load_from_checkpoint`` cannot resolve its own parameters
 inside a sandboxed shell and fails with
 ``Group 'module' does not accept option 'sample_rate'``.
@@ -113,19 +121,55 @@ def _patch_mkdtemp() -> None:
     tempfile.mkdtemp = sandbox_safe_mkdtemp
 
 
+def _patch_spline_discriminant() -> None:
+    """Let the exporter tolerate an out-of-domain spline discriminant.
+
+    ``transforms.rational_quadratic_spline`` asserts ``discriminant >= 0`` in its
+    inverse branch. A model trained for only a few dozen epochs leaves the spline
+    parameters outside their valid range, so the assertion fires during export
+    even though synthesis itself still runs.
+
+    The naive workaround -- forcing ``inverse=False`` -- is **wrong**: VITS calls
+    the flow with ``reverse=True`` at synthesis time, so the inverse branch is the
+    one actually used. Flipping it silently computes every coupling layer
+    backwards, and the exported model then emits noise of the right length and
+    loudness with no speech in it. (That bug shipped once; this is the fix.)
+
+    We replace the module attribute with a copy of the function whose assertion
+    has been removed and whose ``discriminant`` is clamped at zero, so
+    ``torch.sqrt`` cannot produce NaN. The flow direction, the arithmetic and the
+    number of coupling layers are untouched; a converged model never hits the
+    clamp.
+    """
+    import inspect
+    import textwrap
+    import types
+
+    original = vits_transforms.rational_quadratic_spline
+    source = textwrap.dedent(inspect.getsource(original))
+
+    # Drop the bare ``assert`` line; keep everything else byte-for-byte.
+    lines = [ln for ln in source.splitlines() if not ln.lstrip().startswith("assert ")]
+    source = chr(10).join(lines)
+    # Clamp the discriminant where it is computed.
+    source = source.replace(
+        "discriminant = b.pow(2) - 4 * a * c",
+        "discriminant = torch.clamp(b.pow(2) - 4 * a * c, min=0.0)",
+    )
+
+    namespace = dict(original.__globals__)
+    exec(compile(source, original.__code__.co_filename, "exec"), namespace)
+    patched = namespace[original.__name__]
+    vits_transforms.rational_quadratic_spline = types.FunctionType(
+        patched.__code__, patched.__globals__, original.__name__,
+        original.__defaults__, original.__closure__,
+    )
+
+
 def export(checkpoint: Path, output_file: Path) -> None:
     _patch_rmdir()
     _patch_mkdtemp()
-    # Neutralise the training-only assertion (see module docstring). The forward
-    # flow never evaluates this branch, but the inverse call used by the stock
-    # exporter does, so patching keeps behaviour identical for healthy models.
-    original_rational_quadratic_spline = vits_transforms.rational_quadratic_spline
-
-    def safe_rational_quadratic_spline(*args, **kwargs):
-        kwargs["inverse"] = False
-        return original_rational_quadratic_spline(*args, **kwargs)
-
-    vits_transforms.rational_quadratic_spline = safe_rational_quadratic_spline
+    _patch_spline_discriminant()
 
     model = VitsModel.load_from_checkpoint(checkpoint, map_location="cpu")
     model_g = model.model_g
