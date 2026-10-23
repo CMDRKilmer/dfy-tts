@@ -61,15 +61,18 @@ uv pip install --python .venv/Scripts/python.exe onnxscript
 
 ## 验证
 
-一条命令跑完整条链路（对齐补丁 → 造数据集 → GPU 跑 1 个 batch → 导出 ONNX → 合成试听）：
+一条命令跑完整条链路（对齐补丁 → 语料审计 → 双语音素器测试 → 造数据集 → GPU 跑 1 个 batch
+→ 导出 ONNX → 中/英/混排三种合成）：
 
 ```powershell
 .venv/Scripts/python.exe scripts/smoke_test.py
 #   -> all smoke checks passed
-#   最后一次实测：onnx 2.2 MB，合成输出 0.99 s @ 22050 Hz
+#   最后一次实测：onnx 2.2 MB；官方 CLI 中文 1.00 s，
+#   say.py 合成 zh 1.16 s / en 1.30 s / mix 1.50 s
 ```
 
 只想要快检查（不训练，约 20 秒）：`scripts/smoke_test.py --skip-train`。
+它会验证「英文句和中英混排行能通过数据集过滤」——这正是以前会被静默丢掉的部分。
 
 分步验证：
 
