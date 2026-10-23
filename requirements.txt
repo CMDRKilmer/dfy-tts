@@ -1,0 +1,24 @@
+# Piper training environment — Windows, RTX 2080 Ti (11 GB), Python 3.12
+#
+# torch must come from the CUDA index, not PyPI (PyPI ships a CPU-only build
+# under the same version number):
+#   uv pip install --python .venv/Scripts/python.exe \
+#     --index-url https://download.pytorch.org/whl/cu130 --upgrade --reinstall torch==2.14.1
+torch==2.14.1
+
+piper-tts[train]==1.8.0
+
+# torch.onnx needs it since torch 2.9; it is NOT part of the [train] extra and
+# ONNX export fails with "ModuleNotFoundError: No module named 'onnxscript'" without it.
+onnxscript==0.7.2
+
+# pulled in by piper-tts[train]; pinned to the versions verified here
+numpy==2.5.4
+numba==0.68.0
+librosa==0.11.0
+soundfile==0.14.0
+lightning==2.6.6
+pytorch-lightning==2.6.6
+onnx==1.23.2
+pysilero-vad==2.1.1
+tensorboard==2.21.0

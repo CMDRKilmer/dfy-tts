@@ -1,0 +1,57 @@
+{
+  "special": {
+    "file": "special.txt",
+    "lines": 71,
+    "chars": 821
+  },
+  "polyphonic": {
+    "file": "polyphonic.txt",
+    "lines": 328,
+    "chars": 5223
+  },
+  "tone_change": {
+    "file": "tone_change.txt",
+    "lines": 115,
+    "chars": 1504
+  },
+  "numbers": {
+    "file": "numbers.txt",
+    "lines": 181,
+    "chars": 2289
+  },
+  "home": {
+    "file": "home.txt",
+    "lines": 184,
+    "chars": 2341
+  },
+  "daily": {
+    "file": "daily.txt",
+    "lines": 94,
+    "chars": 1059
+  },
+  "anime": {
+    "file": "anime.txt",
+    "lines": 96,
+    "chars": 1170
+  },
+  "literary": {
+    "file": "literary.txt",
+    "lines": 88,
+    "chars": 1133
+  },
+  "reading": {
+    "file": "reading.txt",
+    "lines": 69,
+    "chars": 1019
+  },
+  "mixed": {
+    "file": "mixed.txt",
+    "lines": 154,
+    "chars": 5460
+  },
+  "_total": {
+    "lines": 1380,
+    "chars": 22019,
+    "avg_chars": 15.96
+  }
+}

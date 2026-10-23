@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# PyTorch Inductor / Triton caches
+torchinductor_*
+*.lock
+
+# Local download cache / scratch (wheel parts, probe scripts)
+.cache/
+.piper-train-src/
+
+# Training artifacts: datasets, caches, checkpoints, exported voices, audio.
+# The generated *corpus* is source, not an artifact, so data/text/ is kept.
+data/*
+!data/text/
