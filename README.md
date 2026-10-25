@@ -325,6 +325,45 @@ echo "主人，客厅的灯已经关好啦。" | python scripts/say.py zh_CN_min
 Pi 4 上 medium 模型实时合成没问题，Pi Zero 建议把 `--length-scale` 调到 1.1–1.2 稍微放慢，
 或者用 `x_low` 档模型。
 
+## 拆分部署：局域网 GPU 主路 + Pi 本地兜底
+
+树莓派跑不动 Qwen3-TTS——Pi 4B 内存带宽 3.65 GB/s、算力 9.4 GFLOPS，12 Hz tokenizer 下
+0.6B 的 RTF 要上百（详见 `docs/pi-lan-tts.md` 的推算与实测）。所以声音拆成两半：
+**PC 的 2080 Ti 出音色，Pi 只做缓存和兜底**。
+
+```
+PC  127.0.0.1:8765 ←── ssh -R 隧道 ──  Pi  127.0.0.1:8765 ──→ aplay
+    Qwen3-TTS 0.6B Base + 克隆参考音
+```
+
+| 环节 | 实测 |
+| --- | --- |
+| 缓存命中 | 0.32 s |
+| Qwen 主路（RTF 3.3–4.2，fp32，24 kHz） | 4 s 音频约 14 s |
+| Piper 兜底（冷启动加载 ~11 s） | 实时率约 1 |
+
+PC 上没有管理员权限、改不了防火墙，所以**不开端口**，用 SSH 反向隧道把 PC 的 8765
+映射到 Pi 的 `127.0.0.1:8765`。两端各一个脚本：
+
+```powershell
+# PC：起服务 + 隧道 + 双守护（任一半挂掉都会自动重连）
+powershell -ExecutionPolicy Bypass -File scripts/start_tts_lan.ps1
+```
+
+```bash
+# Pi：一次性检查环境（加 --warm 顺带预合成常用句）
+./scripts/setup_pi.sh --warm
+
+# 说话：缓存 → 局域网 Qwen → 本地 Piper，自动降级
+python scripts/tts_client.py "深夜了，早点睡哦"
+
+# 只走本地 Piper（离线测试）
+python scripts/tts_client.py --prefer local "测试本地音色"
+```
+
+fp16 为什么会崩、为什么锁 fp32、`audio` 组、脚本必须带 BOM 这些坑见
+[docs/pi-lan-tts.md](docs/pi-lan-tts.md)。
+
 ## 目录结构
 
 ```
@@ -343,6 +382,10 @@ scripts/
   phonemize_bilingual.py     # 中英分流音素器（推理端必需，含 uncovered() 干跑）
   test_phonemize_bilingual.py# 分段无损 / 中文奇偶校验 / 英文符号覆盖
   say.py                     # 双语合成器（电脑与树莓派都能用）
+  tts_server.py              # 局域网 TTS 服务（FastAPI + Qwen3-TTS，只监听 127.0.0.1）
+  tts_client.py              # 树莓派端：缓存 → LAN Qwen → 本地 Piper 自动降级
+  setup_pi.sh                # 树莓派环境自检 + 预合成常用句
+  start_tts_lan.ps1          # PC 侧一键：起服务 + SSH 反向隧道 + 双守护
   train.py                   # 训练入口（修掉离线时 ckpt 不落盘的问题）
   train_voice.py             # 训练参数封装（gpu/16-mixed/目录约定）
   export_onnx_safe.py        # ONNX 导出（绕开欠训练的断言）
